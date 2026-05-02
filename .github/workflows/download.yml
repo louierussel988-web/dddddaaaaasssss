@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tg_link:
-        description: 'Telegram Message Link (e.g., https://t.me/c/1234/56)'
+        description: 'Telegram Message Link'
         required: true
         type: string
 
@@ -33,15 +33,15 @@ jobs:
           API_HASH: ${{ secrets.API_HASH }}
           SESSION_STRING: ${{ secrets.SESSION_STRING }}
         run: |
-          # We pass the input directly to sys.argv[1]
-          python downloader.py "${{ github.event.inputs.tg_link }}"
+          # Use -u to force logs to show up immediately
+          # MAKE SURE YOUR FILE IS NAMED downloader.py
+          python -u downloader.py "${{ github.event.inputs.tg_link }}"
 
       - name: Commit and Push
+        if: success() # Only run this if the download worked
         run: |
           git config user.name "GitHub Action Bot"
           git config user.email "bot@users.noreply.github.com"
-          
-          # Add all new files downloaded by the script
           git add .
-          git commit -m "Add downloaded media [skip ci]" || echo "No changes to commit"
+          git commit -m "Add downloaded media [skip ci]" || echo "No changes"
           git push
