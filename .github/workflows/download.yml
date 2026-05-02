@@ -34,7 +34,7 @@ jobs:
           SESSION_STRING: ${{ secrets.SESSION_STRING }}
         run: |
           # We pass the input directly to sys.argv[1]
-          python download.py "${{ github.event.inputs.tg_link }}"
+          python downloader.py "${{ github.event.inputs.tg_link }}"
 
       - name: Commit and Push
         run: |
