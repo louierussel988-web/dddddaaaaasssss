@@ -1,0 +1,47 @@
+name: Telegram Downloader
+
+on:
+  workflow_dispatch:
+    inputs:
+      tg_link:
+        description: 'Telegram Message Link (e.g., https://t.me/c/1234/56)'
+        required: true
+        type: string
+
+jobs:
+  download-job:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install Dependencies
+        run: |
+          pip install telethon
+
+      - name: Run Downloader
+        env:
+          API_ID: ${{ secrets.API_ID }}
+          API_HASH: ${{ secrets.API_HASH }}
+          SESSION_STRING: ${{ secrets.SESSION_STRING }}
+        run: |
+          # We pass the input directly to sys.argv[1]
+          python download.py "${{ github.event.inputs.tg_link }}"
+
+      - name: Commit and Push
+        run: |
+          git config user.name "GitHub Action Bot"
+          git config user.email "bot@users.noreply.github.com"
+          
+          # Add all new files downloaded by the script
+          git add .
+          git commit -m "Add downloaded media [skip ci]" || echo "No changes to commit"
+          git push
