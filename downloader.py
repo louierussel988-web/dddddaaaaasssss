@@ -1,44 +1,44 @@
 from telethon import TelegramClient
-import asyncio
+from telethon.sessions import StringSession
 import os
 import sys
 
-api_id = os.getenv('API_ID')
+# Get secrets from GitHub Environment
+api_id = int(os.getenv('API_ID'))
 api_hash = os.getenv('API_HASH')
-session_name = 'me'
+session_str = os.getenv('SESSION_STRING') # You'll need to add this secret
 
-if len(sys.argv) < 2:
-    print("Usage: python script.py <telegram_link>")
-    sys.exit(1)
-
-link = sys.argv[1]
-
-parts = link.split('/')
-
-try:
-    if "https://t.me/c/" in link:
-        channel = int(f"-100{parts[4]}")
-        message_id = int(parts[5])
-    else:
-        # For public links like t.me/channel/123
-        channel = parts[3]
-        message_id = int(parts[4])
-except (IndexError, ValueError):
-    print("Invalid Link Format")
-    sys.exit(1)
-
-client = TelegramClient(session_name, api_id, api_hash)
+# Use StringSession to bypass interactive login
+client = TelegramClient(StringSession(session_str), api_id, api_hash)
 
 async def download_media():
-    await client.start()
-    message = await client.get_messages(channel, ids=message_id)
+    if len(sys.argv) < 2:
+        print("No link provided.")
+        return
 
-    if message and message.media:
-        print("Downloading media...")
-        path = await message.download_media()
-        print(f"Downloaded to: {path}")
-    else:
-        print("No media found in this message.")
+    link = sys.argv[1]
+    parts = link.split('/')
+    
+    try:
+        # Simplified parsing logic
+        if "/c/" in link:
+            channel = int(f"-100{parts[4]}")
+            message_id = int(parts[5])
+        else:
+            channel = parts[3]
+            message_id = int(parts[4])
+
+        await client.start()
+        message = await client.get_messages(channel, ids=message_id)
+
+        if message and message.media:
+            path = await message.download_media()
+            print(f"Downloaded to: {path}")
+        else:
+            print("No media found.")
+            
+    except Exception as e:
+        print(f"Error: {e}")
 
 with client:
     client.loop.run_until_complete(download_media())
