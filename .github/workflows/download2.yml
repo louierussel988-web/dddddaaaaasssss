@@ -1,0 +1,154 @@
+name: Telegram Downloader2
+
+on:
+  workflow_dispatch:
+    inputs:
+      tg_link:
+        description: 'Telegram Message Link'
+        required: true
+        type: string
+      split_mode:
+        description: 'Large File Handling (Default: ZIP)'
+        required: true
+        type: choice
+        default: 'Default ZIP'
+        options:
+          - 'Default ZIP'
+          - 'Smart Split (FFmpeg for Videos)'
+      password:
+        description: 'ZIP Password (Optional - Only applies if ZIP is used)'
+        required: false
+        type: string
+        default: ''
+
+jobs:
+  download-job:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg aria2 zip
+          pip install telethon
+
+      - name: Run Downloader
+        env:
+          API_ID: ${{ secrets.API_ID }}
+          API_HASH: ${{ secrets.API_HASH }}
+          SESSION_STRING: ${{ secrets.SESSION_STRING }}
+        run: |
+          python -u downloader.py "${{ github.event.inputs.tg_link }}"
+
+      - name: Process & Split
+        shell: bash
+        run: |
+          HAS_PASS="${{ github.event.inputs.password }}"
+          MODE="${{ github.event.inputs.split_mode }}"
+          # Use a more conservative 85MB limit to account for keyframe gaps
+          LIMIT=$((85 * 1024 * 1024))
+          GH_LIMIT=$((99 * 1024 * 1024)) # Hard ceiling for GitHub
+          mkdir -p dl
+
+          for FILE in downloads/*; do
+            [ -f "$FILE" ] || continue
+            SIZE=$(stat -c%s "$FILE")
+            BASENAME=$(basename "$FILE")
+            FILENAME="${BASENAME%.*}"
+            EXT="${BASENAME##*.}"
+            EXT_LOWER=$(echo "$EXT" | tr '[:upper:]' '[:lower:]')
+
+            if [ "$SIZE" -gt "$GH_LIMIT" ]; then
+              SUCCESS=false
+              
+              if [[ "$MODE" == "Smart Split (FFmpeg for Videos)" ]] && [[ "$EXT_LOWER" =~ ^(mp4|mkv|mov|avi|mp3|m4a|ts)$ ]]; then
+                echo "Attempting Smart Split for $BASENAME..."
+                DURATION=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$FILE")
+                # Interval based on 85MB target
+                INTERVAL=$(python3 -c "print(max(1, int($DURATION / ($SIZE / $LIMIT))))")
+                
+                ffmpeg -i "$FILE" -c copy -f segment -segment_time $INTERVAL -reset_timestamps 1 "dl/${FILENAME}_part_%03d.$EXT"
+                
+                # Check if any created part still exceeds GitHub's limit
+                BIG_PARTS=$(find dl/ -name "${FILENAME}_part_*" -size +99M)
+                if [ -z "$BIG_PARTS" ]; then
+                  SUCCESS=true
+                  find dl/ -name "${FILENAME}_part_*" -printf "%f\n" >> new_files.txt
+                else
+                  echo "Smart Split produced a file over 100MB due to keyframe spacing. Falling back to ZIP..."
+                  rm -f dl/"${FILENAME}"_part_*
+                fi
+              fi
+
+              # Fallback to ZIP if Smart Split was skipped, failed, or produced oversize parts
+              if [ "$SUCCESS" = false ]; then
+                echo "Using ZIP split for $BASENAME..."
+                PASS_ARG=""
+                [ -n "$HAS_PASS" ] && PASS_ARG="-P $HAS_PASS"
+                # Use 95m for zip to be safe
+                zip $PASS_ARG -s 95m "dl/${BASENAME}.zip" -j "$FILE"
+                find dl/ -name "${BASENAME}.z*" -printf "%f\n" >> new_files.txt
+                find dl/ -name "${BASENAME}.zip" -printf "%f\n" >> new_files.txt
+              fi
+            else
+              echo "Small file: Copying $BASENAME"
+              cp "$FILE" "dl/$BASENAME"
+              echo "$BASENAME" >> new_files.txt
+            fi
+          done
+          rm -rf downloads
+
+      - name: Update Links.md
+        shell: bash
+        run: |
+          [ ! -f new_files.txt ] && exit 0
+          REPO="${{ github.repository }}"
+          BRANCH="${GITHUB_REF_NAME}"
+          HEADER="## 🔗 Telegram Download Links\n> Processed via GitHub Actions.<br><br/>\n\n"
+          
+          echo "### 📅 $(TZ='Asia/Tehran' date +'%Y-%m-%d %H:%M') IR" > current_run.md
+          while IFS= read -r FNAME; do
+            ENCODED_NAME=$(python3 -c "import urllib.parse; print(urllib.parse.quote(input()))" <<< "$FNAME")
+            RAW_URL="https://github.com/$REPO/raw/$BRANCH/dl/$ENCODED_NAME"
+            
+            export FNAME_ENV="$FNAME"
+            SIZE_STR=$(python3 -c "import os; fname = os.environ.get('FNAME_ENV'); path = f'dl/{fname}'; size = os.path.getsize(path) if os.path.exists(path) else 0; print(f'{size/1048576:.1f}MB' if size >= 1048576 else f'{size//1024}KB')")
+            
+            EXT="${FNAME##*.}"
+            case "${EXT,,}" in
+              mp4|mkv|mov|avi) ICON="🎬" ;;
+              mp3|m4a|flac|ogg) ICON="🎵" ;;
+              zip|z[0-9]*) ICON="🗜️" ;;
+              *) ICON="📥" ;;
+            esac
+            echo "- $ICON [$FNAME]($RAW_URL) \`$SIZE_STR\`" >> current_run.md
+            echo "" >> current_run.md
+          done < new_files.txt
+
+          if [ -f Links.md ]; then
+            tail -n +4 Links.md > old_links.md 2>/dev/null || touch old_links.md
+            echo -e "$HEADER" > Links.md
+            cat current_run.md old_links.md >> Links.md
+          else
+            echo -e "$HEADER" > Links.md
+            cat current_run.md >> Links.md
+          fi
+          rm -f current_run.md new_files.txt old_links.md
+
+      - name: Commit and Push
+        run: |
+          git config user.name "GitHub Action Bot"
+          git config user.email "bot@users.noreply.github.com"
+          git add dl/ Links.md
+          git commit -m "Add media (Mode: ${{ github.event.inputs.split_mode }}) [skip ci]" || echo "No changes"
+          git push
